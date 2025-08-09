@@ -61,7 +61,18 @@ class ClientSSE:
                         try:
                             log_data = json.loads(line[6:])
                             timestamp = datetime.fromtimestamp(log_data['timestamp']).strftime('%Y-%m-%d %H:%M:%S')
-                            print(f"[{timestamp}] {log_data['level']}: {log_data['message']} (check: {log_data['data']['check_number']}/{log_data['data']['total_checks']})")
+                            print(f"[{timestamp}] {log_data['level']}")
+                            print(f"  Full Response: {json.dumps(log_data, indent=2)}")
+                            
+                            # Also show specific fields for convenience
+                            if 'data' in log_data:
+                                data = log_data['data']
+                                if 'check_number' in data and 'total_checks' in data:
+                                    print(f"  Check: {data['check_number']}/{data['total_checks']}")
+                                if 'status' in data:
+                                    print(f"  Status: {data['status']}")
+                                if 'interval' in data:
+                                    print(f"  Interval: {data['interval']}")
                         except json.JSONDecodeError as e:
                             print(f"Error parsing JSON: {e}")
             else:
@@ -86,18 +97,27 @@ class ClientSSE:
                             log_data = json.loads(line[6:])
                             timestamp = datetime.fromtimestamp(log_data['timestamp']).strftime('%Y-%m-%d %H:%M:%S')
                             
-                            if log_data['level'] == 'ERROR':
-                                print(f"[{timestamp}] ERROR: {log_data['message']}")
-                                if 'error' in log_data['data']:
-                                    print(f"  Details: {log_data['data']['error']}")
-                            else:
-                                print(f"[{timestamp}] {log_data['level']}: {log_data['message']}")
-                                if 'stdout' in log_data['data'] and log_data['data']['stdout']:
-                                    print(f"  STDOUT: {log_data['data']['stdout']}")
-                                if 'stderr' in log_data['data'] and log_data['data']['stderr']:
-                                    print(f"  STDERR: {log_data['data']['stderr']}")
-                                if 'exit_code' in log_data['data']:
-                                    print(f"  Exit Code: {log_data['data']['exit_code']}")
+                            # Print the full response data
+                            print(f"[{timestamp}] {log_data['level']}")
+                            print(f"  Full Response: {json.dumps(log_data, indent=2)}")
+                            
+                            # Also show specific fields for convenience
+                            if 'data' in log_data:
+                                data = log_data['data']
+                                if 'stdout' in data and data['stdout']:
+                                    print(f"  STDOUT: {data['stdout']}")
+                                if 'stderr' in data and data['stderr']:
+                                    print(f"  STDERR: {data['stderr']}")
+                                if 'exit_code' in data:
+                                    print(f"  Exit Code: {data['exit_code']}")
+                                if 'status' in data:
+                                    print(f"  Status: {data['status']}")
+                                if 'namespace' in data:
+                                    print(f"  Namespace: {data['namespace']}")
+                                if 'prefix' in data:
+                                    print(f"  Prefix: {data['prefix']}")
+                                if 'command' in data:
+                                    print(f"  Command: {data['command']}")
                                     
                         except json.JSONDecodeError as e:
                             print(f"Error parsing JSON: {e}")
