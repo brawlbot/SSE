@@ -44,7 +44,7 @@ async def health_check_sse_generate_loop(interval: float = 1.0, max_checks: int 
 
 async def run_script_v2(command: str, namespace: str, prefix: str) -> AsyncGenerator[str, None]:
     """
-    Execute script on Kubernetes pod and stream results
+    Execute script on Kubernetes pod and stream results with line-by-line buffering
     """
     try:
         # Create a mock session and data for K8sApplication
@@ -53,6 +53,10 @@ async def run_script_v2(command: str, namespace: str, prefix: str) -> AsyncGener
         
         # Initialize K8sApplication
         k8s_app = K8sApplication("", data, session)
+        
+        # Buffers for accumulating output
+        stdout_buffer = ""
+        stderr_buffer = ""
         
         # Execute command on pod and stream results
         for result in k8s_app.run_task_on_pod_v2(prefix, namespace, command):
@@ -70,33 +74,115 @@ async def run_script_v2(command: str, namespace: str, prefix: str) -> AsyncGener
                             "command": command
                         }
                     }
+                    yield f"data: {json.dumps(log_entry)}\n\n"
                 else:
-                    # Success result - prioritize stdout display
-                    stdout_content = result.get("stdout", "")
-                    stderr_content = result.get("stderr", "")
-                    exit_code = result.get("exit_code", 0)
+                    # Handle stdout buffering
+                    if result.get("stdout"):
+                        stdout_buffer += result.get("stdout", "")
+                        # Process complete lines from stdout
+                        while '\n' in stdout_buffer:
+                            line, stdout_buffer = stdout_buffer.split('\n', 1)
+                            if line.strip():  # Only send non-empty lines
+                                log_entry = {
+                                    "timestamp": time.time(),
+                                    "level": "INFO",
+                                    "message": "Script execution result",
+                                    "data": {
+                                        "stdout": line.strip(),
+                                        "stderr": "",
+                                        "exit_code": result.get("exit_code", 0),
+                                        "namespace": namespace,
+                                        "prefix": prefix,
+                                        "command": command
+                                    }
+                                }
+                                yield f"data: {json.dumps(log_entry)}\n\n"
                     
-                    log_entry = {
-                        "timestamp": time.time(),
-                        "level": "INFO",
-                        "message": f"Script execution result",
-                        "data": {
-                            "stdout": stdout_content,
-                            "stderr": stderr_content,
-                            "exit_code": exit_code,
-                            "namespace": namespace,
-                            "prefix": prefix,
-                            "command": command
-                        }
-                    }
-                
-                yield f"data: {json.dumps(log_entry)}\n\n"
+                    # Handle stderr buffering
+                    if result.get("stderr"):
+                        stderr_buffer += result.get("stderr", "")
+                        # Process complete lines from stderr
+                        while '\n' in stderr_buffer:
+                            line, stderr_buffer = stderr_buffer.split('\n', 1)
+                            if line.strip():  # Only send non-empty lines
+                                log_entry = {
+                                    "timestamp": time.time(),
+                                    "level": "INFO",
+                                    "message": "Script execution result",
+                                    "data": {
+                                        "stdout": "",
+                                        "stderr": line.strip(),
+                                        "exit_code": result.get("exit_code", 0),
+                                        "namespace": namespace,
+                                        "prefix": prefix,
+                                        "command": command
+                                    }
+                                }
+                                yield f"data: {json.dumps(log_entry)}\n\n"
+                    
+                    # Handle completion status
+                    if result.get("status") == "completed":
+                        # Send any remaining buffered content
+                        if stdout_buffer.strip():
+                            log_entry = {
+                                "timestamp": time.time(),
+                                "level": "INFO",
+                                "message": "Script execution result",
+                                "data": {
+                                    "stdout": stdout_buffer.strip(),
+                                    "stderr": "",
+                                    "exit_code": result.get("exit_code", 0),
+                                    "namespace": namespace,
+                                    "prefix": prefix,
+                                    "command": command
+                                }
+                            }
+                            yield f"data: {json.dumps(log_entry)}\n\n"
+                        
+                        if stderr_buffer.strip():
+                            log_entry = {
+                                "timestamp": time.time(),
+                                "level": "INFO",
+                                "message": "Script execution result",
+                                "data": {
+                                    "stdout": "",
+                                    "stderr": stderr_buffer.strip(),
+                                    "exit_code": result.get("exit_code", 0),
+                                    "namespace": namespace,
+                                    "prefix": prefix,
+                                    "command": command
+                                }
+                            }
+                            yield f"data: {json.dumps(log_entry)}\n\n"
+                        
+                        # Send completion message
+                        if result.get("message"):
+                            log_entry = {
+                                "timestamp": time.time(),
+                                "level": "INFO",
+                                "message": result.get("message"),
+                                "data": {
+                                    "stdout": "",
+                                    "stderr": "",
+                                    "exit_code": result.get("exit_code", 0),
+                                    "namespace": namespace,
+                                    "prefix": prefix,
+                                    "command": command,
+                                    "status": "completed"
+                                }
+                            }
+                            yield f"data: {json.dumps(log_entry)}\n\n"
+                        
+                        # Clear buffers
+                        stdout_buffer = ""
+                        stderr_buffer = ""
+                        
             else:
                 # Handle case where result is not a dict
                 log_entry = {
                     "timestamp": time.time(),
                     "level": "INFO",
-                    "message": f"Script execution result",
+                    "message": "Script execution result",
                     "data": {
                         "result": str(result),
                         "namespace": namespace,
