@@ -28,15 +28,16 @@ interface:
 
 test-health:
 	@echo "Testing health endpoint..."
+	@echo "curl -s -N -X POST \"http://localhost:8000/health\" -H \"Content-Type: application/json\" -d '{\"interval\": 0.5, \"max_checks\": 30}'"
 	@curl -s -N -X POST "http://localhost:8000/health" \
 		-H "Content-Type: application/json" \
-		-d '{"interval": 0.5, "max_checks": 3}' | head -10
+		-d '{"interval": 0.5, "max_checks": 30}' | head -10
 
 test-execute:
 	@echo "Testing execute endpoint..."
 	@curl -s -N -X POST "http://localhost:8000/execute" \
 		-H "Content-Type: application/json" \
-		-d '{"command": "echo hello", "namespace": "$(namespace)", "prefix": "$(prefix)"}' | head -10
+		-d '{"command": "seq 1 10 | xargs -I {} sh -c \"echo \\\"Log entry {}\\\"; sleep 0.5\"", "namespace": "$(namespace)", "prefix": "$(prefix)"}' | head -10
 
 clean:
 	@find . -name "*.pyc" -delete 2>/dev/null || true

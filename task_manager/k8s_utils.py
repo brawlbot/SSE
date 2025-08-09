@@ -45,6 +45,7 @@ class K8sApplication:
     def run_task_on_pod_v2(self, prefix: str, namespace: str, script: str):
         """
         Run a task script on a worker pod with real-time line-by-line streaming.
+        Yields each line of stdout and stderr as a dict.
         """
         try:
             # Get the pod name (assuming the pod name starts with the worker_name)
@@ -52,9 +53,14 @@ class K8sApplication:
                 namespace, label_selector=f"prefix={prefix}"
             )
             if not pods.items:
-                raise Exception(
-                    f"No pods found for worker '{prefix}' in namespace '{namespace}'"
-                )
+                yield {
+                    "status": "error",
+                    "exit_code": 1,
+                    "message": f"No pods found for worker '{prefix}' in namespace '{namespace}'",
+                    "stdout": "",
+                    "stderr": f"No pods found for worker '{prefix}' in namespace '{namespace}'"
+                }
+                return
 
             pod_name = pods.items[0].metadata.name
 
@@ -70,91 +76,53 @@ class K8sApplication:
                 stdin=False,
                 stdout=True,
                 tty=False,
+                _preload_content=False
             )
 
-            # Buffers for incomplete lines
-            stdout_buffer = ""
-            stderr_buffer = ""
-            
-            # Process output in real-time, line by line
-            for chunk in exec_response:
-                if hasattr(chunk, 'stdout') and chunk.stdout:
-                    stdout_buffer += chunk.stdout
-                    
-                    # Process complete lines from stdout
-                    while '\n' in stdout_buffer:
-                        line, stdout_buffer = stdout_buffer.split('\n', 1)
-                        if line.strip():  # Only yield non-empty lines
-                            yield {
-                                "stdout": line,
-                                "stderr": "",
-                                "exit_code": 0,
-                                "status": "running",
-                                "timestamp": time.time()
-                            }
-                    
-                elif hasattr(chunk, 'stderr') and chunk.stderr:
-                    stderr_buffer += chunk.stderr
-                    
-                    # Process complete lines from stderr
-                    while '\n' in stderr_buffer:
-                        line, stderr_buffer = stderr_buffer.split('\n', 1)
-                        if line.strip():  # Only yield non-empty lines
-                            yield {
-                                "stdout": "",
-                                "stderr": line,
-                                "exit_code": 0,
-                                "status": "running",
-                                "timestamp": time.time()
-                            }
-                    
-                else:
-                    # Handle case where chunk might not have expected attributes
-                    if chunk:
-                        yield {
-                            "stdout": str(chunk) if chunk else "",
-                            "stderr": "",
-                            "exit_code": 0,
-                            "status": "running",
-                            "timestamp": time.time()
-                        }
-            
-            # Process any remaining content in buffers
-            if stdout_buffer.strip():
+            # Read from the stream and yield lines as they arrive
+            try:
+                while exec_response.is_open():
+                    exec_response.update(timeout=1)
+                    while exec_response.peek_stdout():
+                        stdout_data = exec_response.read_stdout()
+                        if stdout_data:
+                            for line in stdout_data.splitlines(keepends=True):
+                                yield {
+                                    "status": "running",
+                                    "exit_code": None,
+                                    "message": "",
+                                    "stdout": line,
+                                    "stderr": ""
+                                }
+                    while exec_response.peek_stderr():
+                        stderr_data = exec_response.read_stderr()
+                        if stderr_data:
+                            for line in stderr_data.splitlines(keepends=True):
+                                yield {
+                                    "status": "running",
+                                    "exit_code": None,
+                                    "message": "",
+                                    "stdout": "",
+                                    "stderr": line
+                                }
+                # After stream closes, get exit code if available
+                exit_code = exec_response.returncode if hasattr(exec_response, 'returncode') else 0
+                status = "success" if exit_code == 0 else "error"
                 yield {
-                    "stdout": stdout_buffer.strip(),
-                    "stderr": "",
-                    "exit_code": 0,
-                    "status": "completed",
-                    "timestamp": time.time()
-                }
-                
-            if stderr_buffer.strip():
-                yield {
+                    "status": status,
+                    "exit_code": exit_code,
+                    "message": f"Task executed on worker '{prefix}' with exit code {exit_code}",
                     "stdout": "",
-                    "stderr": stderr_buffer.strip(),
-                    "exit_code": 0,
-                    "status": "completed",
-                    "timestamp": time.time()
+                    "stderr": ""
                 }
-            
-            # Final completion message
-            yield {
-                "stdout": "",
-                "stderr": "",
-                "exit_code": 0,
-                "status": "completed",
-                "timestamp": time.time(),
-                "message": "Task execution completed successfully"
-            }
+            finally:
+                exec_response.close()
 
         except Exception as e:
-            # Yield error information
             yield {
-                "stdout": "",
-                "stderr": str(e),
-                "exit_code": -1,
                 "status": "error",
-                "timestamp": time.time(),
-                "message": f"Failed to execute task on worker: {str(e)}"
+                "exit_code": 1,
+                "message": f"Failed to execute task on worker: {str(e)}",
+                "stdout": "",
+                "stderr": str(e)
             }
