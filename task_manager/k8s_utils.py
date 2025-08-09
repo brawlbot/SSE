@@ -57,6 +57,8 @@ class K8sApplication:
                 yield {
                     "status": "error",
                     "exit_code": 1,
+                    "script_pid": None,
+                    "child_pid": None,
                     "stdout": "",
                     "stderr": f"No pods found for worker '{prefix}' in namespace '{namespace}'"
                 }
@@ -68,8 +70,17 @@ class K8sApplication:
             # Use a temporary file approach to ensure exit code is captured
             modified_script = f"""
 #!/bin/sh
-# Execute the original script and capture its exit code
-{script}
+# Set up process tracking and output immediately
+SCRIPT_PID=$$
+echo "SCRIPT_PID:$SCRIPT_PID"
+
+# Execute the original script in background and capture its PID
+{script} &
+CHILD_PID=$!
+echo "CHILD_PID:$CHILD_PID"
+
+# Wait for the child process to complete
+wait $CHILD_PID
 SCRIPT_EXIT_CODE=$?
 
 # Always output the exit code to stderr (this will be captured)
@@ -78,6 +89,7 @@ echo "EXIT_CODE:$SCRIPT_EXIT_CODE" >&2
 # Exit with the same code
 exit $SCRIPT_EXIT_CODE
 """
+            logging.info(f"Modified script: {modified_script}")
 
             exec_response = stream.stream(
                 self.k8s_client.core_v1.connect_get_namespaced_pod_exec,
@@ -97,6 +109,10 @@ exit $SCRIPT_EXIT_CODE
                 stdout_lines = []
                 stderr_lines = []
                 exit_code_found = False
+                script_pid = None
+                child_pid = None
+                stdout_buffer = ""
+                stderr_buffer = ""
                 
                 # Simple approach: just read all data at once
                 while exec_response.is_open():
@@ -107,31 +123,65 @@ exit $SCRIPT_EXIT_CODE
                         if exec_response.peek_stdout():
                             stdout_data = exec_response.read_stdout()
                             if stdout_data:
-                                # Split by newlines and yield each line
-                                lines = stdout_data.split('\n')
-                                for line in lines:
-                                    if line.strip():
+                                print(f"DEBUG: Received stdout data: {repr(stdout_data)}")
+                                # Add to buffer and process complete lines
+                                stdout_buffer += stdout_data
+                                while '\n' in stdout_buffer:
+                                    line, stdout_buffer = stdout_buffer.split('\n', 1)
+                                    print(f"DEBUG: Processing stdout line: {repr(line)}")
+                                    if line.startswith('SCRIPT_PID:'):
+                                        try:
+                                            script_pid = int(line.split(':', 1)[1])
+                                            print(f"DEBUG: Captured SCRIPT_PID from stdout: {script_pid}")
+                                        except (ValueError, IndexError):
+                                            script_pid = None
+                                    elif line.startswith('CHILD_PID:'):
+                                        try:
+                                            child_pid = int(line.split(':', 1)[1])
+                                            print(f"DEBUG: Captured CHILD_PID from stdout: {child_pid}")
+                                        except (ValueError, IndexError):
+                                            child_pid = None
+                                    elif line.strip():
                                         stdout_lines.append(line.strip())
                                         yield {
                                             "status": "running",
                                             "exit_code": None,
+                                            "script_pid": script_pid,
+                                            "child_pid": child_pid,
                                             "stdout": line.strip(),
                                             "stderr": ""
                                         }
                     except Exception as e:
+                        print(f"DEBUG: Error reading stdout: {e}")
                         pass
                     
                     try:
                         if exec_response.peek_stderr():
                             stderr_data = exec_response.read_stderr()
                             if stderr_data:
-                                # Split by newlines and yield each line
-                                lines = stderr_data.split('\n')
-                                for line in lines:
-                                    if line.startswith('EXIT_CODE:'):
+                                print(f"DEBUG: Received stderr data: {repr(stderr_data)}")
+                                # Add to buffer and process complete lines
+                                stderr_buffer += stderr_data
+                                while '\n' in stderr_buffer:
+                                    line, stderr_buffer = stderr_buffer.split('\n', 1)
+                                    print(f"DEBUG: Processing stderr line: {repr(line)}")
+                                    if line.startswith('SCRIPT_PID:'):
+                                        try:
+                                            script_pid = int(line.split(':', 1)[1])
+                                            print(f"DEBUG: Captured SCRIPT_PID: {script_pid}")
+                                        except (ValueError, IndexError):
+                                            script_pid = None
+                                    elif line.startswith('CHILD_PID:'):
+                                        try:
+                                            child_pid = int(line.split(':', 1)[1])
+                                            print(f"DEBUG: Captured CHILD_PID: {child_pid}")
+                                        except (ValueError, IndexError):
+                                            child_pid = None
+                                    elif line.startswith('EXIT_CODE:'):
                                         try:
                                             exit_code = int(line.split(':', 1)[1])
                                             exit_code_found = True
+                                            print(f"DEBUG: Captured EXIT_CODE: {exit_code}")
                                         except (ValueError, IndexError):
                                             exit_code = 0
                                     elif line.strip():
@@ -139,17 +189,45 @@ exit $SCRIPT_EXIT_CODE
                                         yield {
                                             "status": "running",
                                             "exit_code": None,
+                                            "script_pid": script_pid,
+                                            "child_pid": child_pid,
                                             "stdout": "",
                                             "stderr": line.strip()
                                         }
                     except Exception as e:
+                        print(f"DEBUG: Error reading stderr: {e}")
                         pass
+                
+                # Process any remaining content in buffers
+                if stdout_buffer.strip():
+                    stdout_lines.append(stdout_buffer.strip())
+                    yield {
+                        "status": "running",
+                        "exit_code": None,
+                        "script_pid": script_pid,
+                        "child_pid": child_pid,
+                        "stdout": stdout_buffer.strip(),
+                        "stderr": ""
+                    }
+                
+                if stderr_buffer.strip():
+                    stderr_lines.append(stderr_buffer.strip())
+                    yield {
+                        "status": "running",
+                        "exit_code": None,
+                        "script_pid": script_pid,
+                        "child_pid": child_pid,
+                        "stdout": "",
+                        "stderr": stderr_buffer.strip()
+                    }
                 
                 # After stream closes, send final status with exit code
                 status = "completed" if exit_code == 0 else "error"
                 yield {
                     "status": status,
                     "exit_code": exit_code,
+                    "script_pid": script_pid,
+                    "child_pid": child_pid,
                     "stdout": "",
                     "stderr": ""
                 }
@@ -170,6 +248,8 @@ exit $SCRIPT_EXIT_CODE
             yield {
                 "status": "error",
                 "exit_code": exit_code,
+                "script_pid": None,
+                "child_pid": None,
                 "stdout": "",
                 "stderr": str(e)
             }

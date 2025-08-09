@@ -9,7 +9,7 @@ async def health_check():
 
 async def execute_script_k8s():
     client = ClientSSE()
-    command = "for i in {1..10}; do printf \"Log entry %s\\n\" $i; sleep 0.1; done"
+    command = "for i in 1 2 3 4 5 6 7 8 9 10; do printf \"Log entry %s\\n\" $i; sleep 0.5; done"
     # command = "sleep 1 && ls /tmp"
     namespace = "dbext-resources"
     prefix = "sh6itcgl"

@@ -37,7 +37,7 @@ test-execute:
 	@echo "Testing execute endpoint..."
 	@curl -s -N -X POST "http://localhost:8000/execute" \
 		-H "Content-Type: application/json" \
-		-d '{"command": "seq 1 10 | xargs -I {} sh -c \"echo \\\"Log entry {}\\\"; sleep 0.5\"", "namespace": "$(namespace)", "prefix": "$(prefix)"}' | head -10
+		-d '{"command": "seq 1 10 | xargs -I {} sh -c \"echo \\\"Log entry {}\\\"; sleep 0.1\"", "namespace": "$(namespace)", "prefix": "$(prefix)"}' | head -10
 
 clean:
 	@find . -name "*.pyc" -delete 2>/dev/null || true

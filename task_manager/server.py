@@ -64,6 +64,8 @@ async def run_script_v2(command: str, namespace: str, prefix: str) -> AsyncGener
                         "data": {
                             "error": result.get("stderr", ""),
                             "exit_code": result.get("exit_code", 1),
+                            "script_pid": result.get("script_pid"),
+                            "child_pid": result.get("child_pid"),
                             "namespace": namespace,
                             "prefix": prefix,
                             "command": command
@@ -80,6 +82,8 @@ async def run_script_v2(command: str, namespace: str, prefix: str) -> AsyncGener
                                 "stdout": result.get("stdout", ""),
                                 "stderr": "",
                                 "exit_code": result.get("exit_code", 0),
+                                "script_pid": result.get("script_pid"),
+                                "child_pid": result.get("child_pid"),
                                 "namespace": namespace,
                                 "prefix": prefix,
                                 "command": command
@@ -96,6 +100,8 @@ async def run_script_v2(command: str, namespace: str, prefix: str) -> AsyncGener
                                 "stdout": "",
                                 "stderr": result.get("stderr", ""),
                                 "exit_code": result.get("exit_code", 0),
+                                "script_pid": result.get("script_pid"),
+                                "child_pid": result.get("child_pid"),
                                 "namespace": namespace,
                                 "prefix": prefix,
                                 "command": command
@@ -112,6 +118,8 @@ async def run_script_v2(command: str, namespace: str, prefix: str) -> AsyncGener
                                 "stdout": "",
                                 "stderr": "",
                                 "exit_code": result.get("exit_code", 0),
+                                "script_pid": result.get("script_pid"),
+                                "child_pid": result.get("child_pid"),
                                 "namespace": namespace,
                                 "prefix": prefix,
                                 "command": command,
