@@ -3,6 +3,7 @@ import time
 from kubernetes import client, stream, config
 from fastapi.exceptions import HTTPException
 import os
+import re
 
 
 class K8sClient:
@@ -56,7 +57,6 @@ class K8sApplication:
                 yield {
                     "status": "error",
                     "exit_code": 1,
-                    "message": f"No pods found for worker '{prefix}' in namespace '{namespace}'",
                     "stdout": "",
                     "stderr": f"No pods found for worker '{prefix}' in namespace '{namespace}'"
                 }
@@ -64,14 +64,26 @@ class K8sApplication:
 
             pod_name = pods.items[0].metadata.name
 
-            command = ["/bin/sh", "-c", script]
+            # Create a wrapper script that captures exit code more reliably
+            # Use a temporary file approach to ensure exit code is captured
+            modified_script = f"""
+#!/bin/sh
+# Execute the original script and capture its exit code
+{script}
+SCRIPT_EXIT_CODE=$?
 
-            # Execute the command inside the pod
+# Always output the exit code to stderr (this will be captured)
+echo "EXIT_CODE:$SCRIPT_EXIT_CODE" >&2
+
+# Exit with the same code
+exit $SCRIPT_EXIT_CODE
+"""
+
             exec_response = stream.stream(
                 self.k8s_client.core_v1.connect_get_namespaced_pod_exec,
                 name=pod_name,
                 namespace=namespace,
-                command=command,
+                command=["/bin/sh", "-c", modified_script],
                 stderr=True,
                 stdin=False,
                 stdout=True,
@@ -81,37 +93,63 @@ class K8sApplication:
 
             # Read from the stream and yield lines as they arrive
             try:
+                exit_code = 0  # Default to success
+                stdout_lines = []
+                stderr_lines = []
+                exit_code_found = False
+                
+                # Simple approach: just read all data at once
                 while exec_response.is_open():
                     exec_response.update(timeout=1)
-                    while exec_response.peek_stdout():
-                        stdout_data = exec_response.read_stdout()
-                        if stdout_data:
-                            for line in stdout_data.splitlines(keepends=True):
-                                yield {
-                                    "status": "running",
-                                    "exit_code": None,
-                                    "message": "",
-                                    "stdout": line,
-                                    "stderr": ""
-                                }
-                    while exec_response.peek_stderr():
-                        stderr_data = exec_response.read_stderr()
-                        if stderr_data:
-                            for line in stderr_data.splitlines(keepends=True):
-                                yield {
-                                    "status": "running",
-                                    "exit_code": None,
-                                    "message": "",
-                                    "stdout": "",
-                                    "stderr": line
-                                }
-                # After stream closes, get exit code if available
-                exit_code = exec_response.returncode if hasattr(exec_response, 'returncode') else 0
-                status = "success" if exit_code == 0 else "error"
+                    
+                    # Try to read any available data
+                    try:
+                        if exec_response.peek_stdout():
+                            stdout_data = exec_response.read_stdout()
+                            if stdout_data:
+                                # Split by newlines and yield each line
+                                lines = stdout_data.split('\n')
+                                for line in lines:
+                                    if line.strip():
+                                        stdout_lines.append(line.strip())
+                                        yield {
+                                            "status": "running",
+                                            "exit_code": None,
+                                            "stdout": line.strip(),
+                                            "stderr": ""
+                                        }
+                    except Exception as e:
+                        pass
+                    
+                    try:
+                        if exec_response.peek_stderr():
+                            stderr_data = exec_response.read_stderr()
+                            if stderr_data:
+                                # Split by newlines and yield each line
+                                lines = stderr_data.split('\n')
+                                for line in lines:
+                                    if line.startswith('EXIT_CODE:'):
+                                        try:
+                                            exit_code = int(line.split(':', 1)[1])
+                                            exit_code_found = True
+                                        except (ValueError, IndexError):
+                                            exit_code = 0
+                                    elif line.strip():
+                                        stderr_lines.append(line.strip())
+                                        yield {
+                                            "status": "running",
+                                            "exit_code": None,
+                                            "stdout": "",
+                                            "stderr": line.strip()
+                                        }
+                    except Exception as e:
+                        pass
+                
+                # After stream closes, send final status with exit code
+                status = "completed" if exit_code == 0 else "error"
                 yield {
                     "status": status,
                     "exit_code": exit_code,
-                    "message": f"Task executed on worker '{prefix}' with exit code {exit_code}",
                     "stdout": "",
                     "stderr": ""
                 }
@@ -119,10 +157,19 @@ class K8sApplication:
                 exec_response.close()
 
         except Exception as e:
+            # Try to get exit code from the error message or use default
+            exit_code = 1  # Default error exit code
+            if "exit code" in str(e).lower():
+                try:
+                    match = re.search(r'exit code[:\s]*(\d+)', str(e), re.IGNORECASE)
+                    if match:
+                        exit_code = int(match.group(1))
+                except (ValueError, IndexError):
+                    pass
+            
             yield {
                 "status": "error",
-                "exit_code": 1,
-                "message": f"Failed to execute task on worker: {str(e)}",
+                "exit_code": exit_code,
                 "stdout": "",
                 "stderr": str(e)
             }
